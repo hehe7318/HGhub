@@ -151,6 +151,15 @@ async fn invoke(
     Path(command): Path<String>,
     Json(args): Json<Value>,
 ) -> Response {
+    // A web client must never turn the host into a proxy for its private network.
+    // The desktop toggle is local-only; sharing the web app does not grant it.
+    if command == "security_set" && args.get("strict").and_then(Value::as_bool) == Some(false) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "ok": false, "error": "网页版不允许关闭内网访问保护" })),
+        )
+            .into_response();
+    }
     if command == "debug_log" {
         if let Some(message) = args.get("msg").and_then(Value::as_str) {
             let _ = crate::logging::append_debug(&state.data_dir, message);
