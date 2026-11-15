@@ -8,6 +8,8 @@ mod net;
 mod network_policy;
 mod playback_log;
 mod session;
+#[cfg(feature = "web-server")]
+pub mod web;
 
 use api::Api;
 use tauri::Manager;

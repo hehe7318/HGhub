@@ -1,0 +1,11 @@
+# Replace this hostname with the server's real HTTPS hostname.
+hghub.example.com {
+    reverse_proxy 127.0.0.1:8900
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+}
