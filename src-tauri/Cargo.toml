@@ -1,6 +1,7 @@
 [package]
 name = "huangguo-client"
 version = "1.2.1"
+default-run = "huangguo-client"
 description = "HGhub · 黄果短剧客户端"
 authors = ["HGhub"]
 license = "PolyForm-Noncommercial-1.0.0"
@@ -17,8 +18,12 @@ custom-protocol = ["tauri/custom-protocol"]
 web-server = ["dep:axum", "dep:tower-http", "dep:sha2", "dep:hex", "dep:subtle"]
 
 [[bin]]
+name = "huangguo-client"
+path = "src/main.rs"
+
+[[bin]]
 name = "hghub-web"
-path = "src/bin/hghub-web.rs"
+path = "src/web_main.rs"
 required-features = ["web-server"]
 
 [build-dependencies]
