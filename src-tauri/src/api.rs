@@ -217,11 +217,13 @@ fn request_ios_orientation(landscape: bool) {
         // UIInterfaceOrientationMaskPortrait = 1 << 1 = 2
         // UIInterfaceOrientationMaskLandscapeRight = 1 << 3 = 8
         let mask: usize = if landscape { 8 } else { 2 };
-        let prefs_cls = objc_getClass(b"UIWindowSceneGeometryPreferencesIOS\0".as_ptr() as *const c_char);
+        let prefs_cls =
+            objc_getClass(b"UIWindowSceneGeometryPreferencesIOS\0".as_ptr() as *const c_char);
         let app_cls = objc_getClass(b"UIApplication\0".as_ptr() as *const c_char);
         if !prefs_cls.is_null() && !app_cls.is_null() {
             let sel_alloc = sel_registerName(b"alloc\0".as_ptr() as *const c_char);
-            let sel_init = sel_registerName(b"initWithInterfaceOrientations:\0".as_ptr() as *const c_char);
+            let sel_init =
+                sel_registerName(b"initWithInterfaceOrientations:\0".as_ptr() as *const c_char);
             let raw_prefs = msg0(prefs_cls, sel_alloc);
             let prefs = if !raw_prefs.is_null() {
                 msg1_usize(raw_prefs, sel_init, mask)
@@ -239,13 +241,19 @@ fn request_ios_orientation(landscape: bool) {
                     let arr = msg0(scenes_set, sel_all);
                     if !arr.is_null() {
                         let sel_count = sel_registerName(b"count\0".as_ptr() as *const c_char);
-                        let sel_at = sel_registerName(b"objectAtIndex:\0".as_ptr() as *const c_char);
+                        let sel_at =
+                            sel_registerName(b"objectAtIndex:\0".as_ptr() as *const c_char);
                         let sel_req = sel_registerName(
-                            b"requestGeometryUpdateWithPreferences:errorHandler:\0".as_ptr() as *const c_char,
+                            b"requestGeometryUpdateWithPreferences:errorHandler:\0".as_ptr()
+                                as *const c_char,
                         );
-                        let sel_responds = sel_registerName(b"respondsToSelector:\0".as_ptr() as *const c_char);
-                        let msg_responds: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool =
-                            std::mem::transmute(objc_msgSend as *const ());
+                        let sel_responds =
+                            sel_registerName(b"respondsToSelector:\0".as_ptr() as *const c_char);
+                        let msg_responds: unsafe extern "C" fn(
+                            *mut c_void,
+                            *mut c_void,
+                            *mut c_void,
+                        ) -> bool = std::mem::transmute(objc_msgSend as *const ());
                         let count = msg0_usize(arr, sel_count);
                         for i in 0..count {
                             let scene = msg1_usize(arr, sel_at, i);
@@ -270,15 +278,20 @@ fn request_ios_orientation(landscape: bool) {
             let orient_val: usize = if landscape { 3 } else { 1 };
             let num = msg1_usize(num_cls, sel_num, orient_val);
             let sel_str = sel_registerName(b"stringWithUTF8String:\0".as_ptr() as *const c_char);
-            let msg_str: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> *mut c_void =
-                std::mem::transmute(objc_msgSend as *const ());
+            let msg_str: unsafe extern "C" fn(
+                *mut c_void,
+                *mut c_void,
+                *const c_char,
+            ) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
             let key = msg_str(str_cls, sel_str, b"orientation\0".as_ptr() as *const c_char);
             if !dev.is_null() && !num.is_null() && !key.is_null() {
                 let sel_set_val = sel_registerName(b"setValue:forKey:\0".as_ptr() as *const c_char);
                 msg2_ptr(dev, sel_set_val, num, key);
             }
             if !vc_cls.is_null() {
-                let sel_attempt = sel_registerName(b"attemptRotationToDeviceOrientation\0".as_ptr() as *const c_char);
+                let sel_attempt = sel_registerName(
+                    b"attemptRotationToDeviceOrientation\0".as_ptr() as *const c_char,
+                );
                 msg1_void(vc_cls, sel_attempt);
             }
         }
@@ -480,7 +493,9 @@ fn normalize_play_info(info: &mut Value) {
     }
     let main = non_empty(info.get("streams").and_then(|s| s.get("main")));
     let hevc = non_empty(info.get("streams").and_then(|s| s.get("hevc")));
-    let Some(obj) = info.as_object_mut() else { return };
+    let Some(obj) = info.as_object_mut() else {
+        return;
+    };
     for (field, stream) in [("video_url", main), ("video_url_hevc", hevc)] {
         if let Some(url) = stream {
             if non_empty(obj.get(field)).is_none() {
@@ -500,7 +515,10 @@ fn has_play_url(info: &Value) -> bool {
 pub async fn api_play(state: State<'_, Api>, id: i64, ep: u32) -> Result<Value, String> {
     // 优先走新接口；失败或没有可用地址时再退回旧接口，两者都不行就返回新接口的结果/错误。
     let primary = state
-        .post(&format!("/api/videos/{id}/episodes/{ep}/playback"), Some(json!({})))
+        .post(
+            &format!("/api/videos/{id}/episodes/{ep}/playback"),
+            Some(json!({})),
+        )
         .await
         .map(|mut info| {
             normalize_play_info(&mut info);
@@ -624,6 +642,377 @@ pub async fn api_post_comments(
         .get(&format!("/api/posts/{id}/comments?page={page}&size={size}"))
         .await
 }
+
+#[cfg(feature = "web-server")]
+fn web_arg<'a>(args: &'a Value, name: &str) -> Result<&'a Value, String> {
+    args.get(name).ok_or_else(|| format!("缺少参数 {name}"))
+}
+
+#[cfg(feature = "web-server")]
+fn web_string(args: &Value, name: &str) -> Result<String, String> {
+    web_arg(args, name)?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("参数 {name} 类型错误"))
+}
+
+#[cfg(feature = "web-server")]
+fn web_i64(args: &Value, name: &str) -> Result<i64, String> {
+    web_arg(args, name)?
+        .as_i64()
+        .ok_or_else(|| format!("参数 {name} 类型错误"))
+}
+
+#[cfg(feature = "web-server")]
+fn web_u32(args: &Value, name: &str) -> Result<u32, String> {
+    let value = web_arg(args, name)?
+        .as_u64()
+        .ok_or_else(|| format!("参数 {name} 类型错误"))?;
+    u32::try_from(value).map_err(|_| format!("参数 {name} 超出范围"))
+}
+
+#[cfg(feature = "web-server")]
+fn web_bool(args: &Value, name: &str) -> Result<bool, String> {
+    web_arg(args, name)?
+        .as_bool()
+        .ok_or_else(|| format!("参数 {name} 类型错误"))
+}
+
+/// Web 版 invoke 入口。业务与 Tauri commands 共用 Api、线路、会话和媒体核心。
+#[cfg(feature = "web-server")]
+pub async fn web_dispatch(state: &Api, command: &str, args: Value) -> Result<Value, String> {
+    match command {
+        "app_boot" => {
+            let origin = base();
+            Ok(json!({
+                "user": state.session.user(&origin),
+                "logged_in": state.session.token(&origin).is_some(),
+                "base": origin,
+                "strict_security": crate::network_policy::strict_security(),
+                "cli_relaxed": crate::network_policy::cli_strict_override() == Some(false),
+            }))
+        }
+        "security_set" => {
+            crate::network_policy::set_strict_security(web_bool(&args, "strict")?)?;
+            crate::net::refresh_client();
+            Ok(json!(crate::network_policy::strict_security()))
+        }
+        "net_diag" => Ok(crate::net::diagnose().await),
+        "line_state" => Ok(json!({
+            "base": base(),
+            "default": crate::net::DEFAULT_BASE,
+            "fixed": crate::lines::fixed(),
+        })),
+        "line_set" => {
+            let previous = base();
+            let next = crate::net::set_base(&web_string(&args, "url")?)?;
+            if previous != next {
+                state.session.clear();
+            }
+            Ok(json!(next))
+        }
+        "line_mirrors" => crate::lines::mirrors().await,
+        "line_probe" => {
+            let urls: Vec<String> = serde_json::from_value(web_arg(&args, "urls")?.clone())
+                .map_err(|_| "参数 urls 类型错误".to_string())?;
+            Ok(crate::lines::probe(urls).await)
+        }
+        "check_update" => check_update().await,
+        "api_login" => {
+            let origin = base();
+            let data = edge(
+                &origin,
+                "POST",
+                "/api/account/loginByPassword",
+                Some(json!({
+                    "username": web_string(&args, "username")?,
+                    "password": web_string(&args, "password")?,
+                })),
+                None,
+            )
+            .await?;
+            let token = data
+                .get("token")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "登录返回缺少 token".to_string())?
+                .to_string();
+            let user = data.get("user").cloned().unwrap_or(Value::Null);
+            if base() != origin {
+                return Err("登录期间线路已变化，请重新登录".into());
+            }
+            state.session.set(&origin, token, user.clone());
+            Ok(json!({ "user": user }))
+        }
+        "api_register" => {
+            let origin = base();
+            let password = web_string(&args, "password")?;
+            let email = web_string(&args, "email")?;
+            let mut body = json!({
+                "username": web_string(&args, "username")?,
+                "password": password,
+                "confirm_password": password,
+            });
+            if !email.trim().is_empty() {
+                body["email"] = json!(email);
+            }
+            let data = edge(
+                &origin,
+                "POST",
+                "/api/account/registerByPassword",
+                Some(body),
+                None,
+            )
+            .await?;
+            let token = data
+                .get("token")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "注册返回缺少 token".to_string())?
+                .to_string();
+            let user = data.get("user").cloned().unwrap_or(Value::Null);
+            if base() != origin {
+                return Err("注册期间线路已变化，请重新登录".into());
+            }
+            state.session.set(&origin, token, user.clone());
+            Ok(json!({ "user": user }))
+        }
+        "api_logout" => {
+            let origin = base();
+            let token = state.session.token(&origin);
+            let _ = edge(
+                &origin,
+                "POST",
+                "/api/account/logout",
+                None,
+                token.as_deref(),
+            )
+            .await;
+            state.session.clear();
+            Ok(json!({ "ok": true }))
+        }
+        "api_me" => {
+            let origin = base();
+            let token = state.session.token(&origin);
+            let me = edge(&origin, "GET", "/api/account/me", None, token.as_deref()).await?;
+            if base() != origin {
+                return Err("读取账号期间线路已变化".into());
+            }
+            if let Some(token) = state.session.token(&origin) {
+                state.session.set(&origin, token, me.clone());
+            }
+            Ok(me)
+        }
+        "api_feed" => {
+            state
+                .get(&format!(
+                    "/api/videos?page={}&size={}",
+                    web_u32(&args, "page")?,
+                    web_u32(&args, "size")?
+                ))
+                .await
+        }
+        "api_category" => {
+            state
+                .get(&format!(
+                    "/api/videos/category/{}?page={}&size={}",
+                    web_string(&args, "cate")?,
+                    web_u32(&args, "page")?,
+                    web_u32(&args, "size")?
+                ))
+                .await
+        }
+        "api_rank" => {
+            let kind = web_string(&args, "kind")?;
+            let kind = match kind.as_str() {
+                "recommend" | "potential" => kind,
+                _ => "hot".to_string(),
+            };
+            state.get(&format!("/api/ranks/{kind}")).await
+        }
+        "api_search" => {
+            let q = web_string(&args, "q")?;
+            let encoded: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
+            state
+                .get(&format!(
+                    "/api/search?q={encoded}&page={}&size={}",
+                    web_u32(&args, "page")?,
+                    web_u32(&args, "size")?
+                ))
+                .await
+        }
+        "api_posts" => {
+            state
+                .get(&format!(
+                    "/api/posts?page={}&size={}",
+                    web_u32(&args, "page")?,
+                    web_u32(&args, "size")?
+                ))
+                .await
+        }
+        "api_post" => {
+            state
+                .get(&format!("/api/posts/{}", web_i64(&args, "id")?))
+                .await
+        }
+        "api_video" => {
+            state
+                .get(&format!("/api/videos/{}", web_i64(&args, "id")?))
+                .await
+        }
+        "api_play" => {
+            let id = web_i64(&args, "id")?;
+            let ep = web_u32(&args, "ep")?;
+            let primary = state
+                .post(
+                    &format!("/api/videos/{id}/episodes/{ep}/playback"),
+                    Some(json!({})),
+                )
+                .await
+                .map(|mut info| {
+                    normalize_play_info(&mut info);
+                    info
+                });
+            if let Ok(info) = &primary {
+                if has_play_url(info) {
+                    return primary;
+                }
+            }
+            match state
+                .get(&format!("/api/videos/{id}/play?ep={ep}&page_texts=0"))
+                .await
+            {
+                Ok(mut legacy) => {
+                    normalize_play_info(&mut legacy);
+                    if has_play_url(&legacy) || primary.is_err() {
+                        Ok(legacy)
+                    } else {
+                        primary
+                    }
+                }
+                Err(_) => primary,
+            }
+        }
+        "api_comments" => {
+            state
+                .get(&format!(
+                    "/api/videos/{}/comments?ep={}&page={}&size={}",
+                    web_i64(&args, "id")?,
+                    web_u32(&args, "ep")?,
+                    web_u32(&args, "page")?,
+                    web_u32(&args, "size")?
+                ))
+                .await
+        }
+        "api_comment_send" => {
+            let id = web_i64(&args, "id")?;
+            let ep = web_u32(&args, "ep")?;
+            let mut body = json!({ "text": web_string(&args, "text")? });
+            let reply_id = args.get("replyId").and_then(Value::as_i64);
+            let path = match reply_id {
+                Some(reply_id) if reply_id > 0 => {
+                    body["reply_id"] = json!(reply_id);
+                    format!("/api/videos/{id}/comments")
+                }
+                _ => format!("/api/videos/{id}/comments?ep={ep}"),
+            };
+            state.authed("POST", &path, Some(body)).await
+        }
+        "api_like" => {
+            let method = if web_bool(&args, "on")? {
+                "POST"
+            } else {
+                "DELETE"
+            };
+            state
+                .authed(
+                    method,
+                    &format!(
+                        "/api/videos/{}/like?ep={}",
+                        web_i64(&args, "id")?,
+                        web_u32(&args, "ep")?
+                    ),
+                    None,
+                )
+                .await
+        }
+        "api_collect" => {
+            let method = if web_bool(&args, "on")? {
+                "POST"
+            } else {
+                "DELETE"
+            };
+            state
+                .authed(
+                    method,
+                    &format!("/api/videos/{}/collect", web_i64(&args, "id")?),
+                    None,
+                )
+                .await
+        }
+        "api_follow" => {
+            let method = if web_bool(&args, "on")? {
+                "POST"
+            } else {
+                "DELETE"
+            };
+            state
+                .authed(
+                    method,
+                    &format!("/api/users/{}/follow", web_i64(&args, "uid")?),
+                    None,
+                )
+                .await
+        }
+        "api_post_like" | "api_post_collect" => {
+            let method = if web_bool(&args, "on")? {
+                "POST"
+            } else {
+                "DELETE"
+            };
+            let action = if command == "api_post_like" {
+                "like"
+            } else {
+                "collect"
+            };
+            state
+                .authed(
+                    method,
+                    &format!("/api/posts/{}/{action}", web_i64(&args, "id")?),
+                    None,
+                )
+                .await
+        }
+        "api_post_comments" => {
+            state
+                .get(&format!(
+                    "/api/posts/{}/comments?page={}&size={}",
+                    web_i64(&args, "id")?,
+                    web_u32(&args, "page")?,
+                    web_u32(&args, "size")?
+                ))
+                .await
+        }
+        "cache_clear" => {
+            crate::media::clear_caches();
+            Ok(Value::Null)
+        }
+        "playback_log_status" => serde_json::to_value(crate::playback_log::playback_log_status()?)
+            .map_err(|e| e.to_string()),
+        "playback_log_set" => serde_json::to_value(crate::playback_log::playback_log_set(
+            web_bool(&args, "enabled")?,
+        )?)
+        .map_err(|e| e.to_string()),
+        "playback_log_write" => {
+            let entries = serde_json::from_value(web_arg(&args, "entries")?.clone())
+                .map_err(|_| "参数 entries 类型错误".to_string())?;
+            crate::playback_log::playback_log_write(entries)?;
+            Ok(Value::Null)
+        }
+        "playback_log_read" => Ok(json!(crate::playback_log::playback_log_read()?)),
+        "debug_log" | "set_orientation" | "plugin:app|exit" => Ok(Value::Null),
+        _ => Err(format!("不支持的命令: {command}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{has_play_url, is_newer, normalize_play_info};
@@ -643,7 +1032,8 @@ mod tests {
 
     #[test]
     fn existing_video_url_is_kept_and_empty_streams_stay_empty() {
-        let mut keep = json!({"video_url": "https://old/a.m3u8", "streams": {"main": "https://x/main.m3u8"}});
+        let mut keep =
+            json!({"video_url": "https://old/a.m3u8", "streams": {"main": "https://x/main.m3u8"}});
         normalize_play_info(&mut keep);
         assert_eq!(keep["video_url"], "https://old/a.m3u8");
 

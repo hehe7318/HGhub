@@ -1,0 +1,63 @@
+name: Build Web Server
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/build-web.yml"
+      - "deploy/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "src/**"
+      - "src-tauri/**"
+
+env:
+  CI: "true"
+
+jobs:
+  web:
+    name: Linux web server
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev \
+            build-essential pkg-config libssl-dev
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Build frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Build server
+        working-directory: src-tauri
+        run: cargo build --locked --release --bin hghub-web --features web-server
+
+      - name: Assemble deployment bundle
+        run: |
+          install -Dm755 src-tauri/target/release/hghub-web bundle/hghub-web
+          cp -R dist bundle/dist
+          cp -R deploy bundle/deploy
+          tar -C bundle -czf HGhub-web-linux-x86_64.tar.gz .
+          sha256sum HGhub-web-linux-x86_64.tar.gz > HGhub-web-linux-x86_64.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-web-linux-x86_64
+          path: |
+            HGhub-web-linux-x86_64.tar.gz
+            HGhub-web-linux-x86_64.tar.gz.sha256
