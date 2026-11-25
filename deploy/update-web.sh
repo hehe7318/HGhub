@@ -10,15 +10,17 @@ release="${2:-}"
 root_dir="/opt/hghub-web"
 
 require_gate() {
-    local port="$1" headers health
+    local port="$1" headers api
     headers="$(curl --silent --show-error --max-time 5 --dump-header - \
         --output /dev/null "http://127.0.0.1:${port}/")"
     [[ "$headers" =~ ^HTTP/[0-9.]+[[:space:]]303[[:space:]] \
         && "$headers" == *"location: /login"* ]] \
         || { echo "Anonymous home is not gated." >&2; return 1; }
-    health="$(curl --silent --show-error --max-time 5 --output /dev/null \
-        --write-out '%{http_code}' "http://127.0.0.1:${port}/health")"
-    [[ "$health" == 401 ]] || { echo "Anonymous health is not denied." >&2; return 1; }
+    api="$(curl --silent --show-error --max-time 5 --output /dev/null \
+        --write-out '%{http_code}' --request POST \
+        --header 'Content-Type: application/json' --data '{}' \
+        "http://127.0.0.1:${port}/api/invoke/api_feed")"
+    [[ "$api" == 401 ]] || { echo "Anonymous API is not denied." >&2; return 1; }
 }
 
 config_snapshot() {
