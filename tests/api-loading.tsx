@@ -5,17 +5,21 @@ import Category from "../src/pages/Category";
 import { AppProvider } from "../src/store";
 import "../src/index.css";
 
-type Request = { cmd: string; args: Record<string, unknown>; resolve: (value: unknown) => void; reject: (error: string) => void };
+type Request = { cmd: string; args: Record<string, unknown>; resolve: (value: unknown) => void; reject: (error: unknown) => void };
 const pending: Request[] = [];
 const fixture = {
   history: [] as { cmd: string; args: Record<string, unknown> }[],
   debug: [] as string[],
   ready: false,
   setActive: (_active: boolean) => {},
-  complete(cmd: string, key: string, result: "404" | "503" | "empty" | "item") {
+  complete(cmd: string, key: string, result: "404" | "503" | "410-web" | "empty" | "item") {
     const index = pending.findIndex(r => r.cmd === cmd && (!key || r.args.cate === key));
     if (index < 0) throw new Error(`No pending request: ${cmd}/${key}`);
     const request = pending.splice(index, 1)[0];
+    if (result === "410-web") {
+      request.reject(new Error('HTTP 410 Gone: {"msg":"内容已下线"}'));
+      return;
+    }
     if (result === "404" || result === "503") {
       request.reject(`HTTP ${result} Gateway: <html><h1>nginx error</h1></html>`);
       return;

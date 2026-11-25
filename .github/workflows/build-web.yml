@@ -40,8 +40,14 @@ jobs:
 
       - name: Build frontend
         run: |
+          bash -n deploy/update-web.sh
           pnpm install --frozen-lockfile
+          pnpm test:api-errors
           pnpm build
+
+      - name: Test backend and security policies
+        working-directory: src-tauri
+        run: cargo test --locked --lib --features web-server
 
       - name: Build server
         working-directory: src-tauri
