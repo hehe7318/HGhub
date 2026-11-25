@@ -1,7 +1,7 @@
 //! 网络层：与上游站点对话。
 //!
-//! 站点把全部 `/api/**` 调用收敛成 `POST /api/edge/request` 的信封，
-//! 我们只实现这一个入口，其余接口都是「填 path」。
+//! 业务接口使用原始 HTTP 方法直接请求 `/api/**`。
+//! 已停用的旧信封网关不再调用；响应仍按 `{status, msg, data}` 解包。
 //!
 //! # 代理（用户反馈「浏览器能开、HGhub 打不开」的根因就在这里）
 //!
@@ -20,8 +20,6 @@
 //! `net_diag` 命令会输出 DNS/HTTP/环境变量快照。
 
 use crate::network_policy;
-use base64::engine::general_purpose::STANDARD as B64;
-use base64::Engine;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -451,7 +449,44 @@ fn edge_operation(path: &str) -> &'static str {
     }
 }
 
-/// 仅无请求体、无凭据的逻辑 GET 可以迁移网关；信封本身仍使用 POST。
+/// 只接受同源业务路径，不能把插件式请求变成任意目标或凭据转发器。
+fn business_target(origin: &str, path: &str) -> Result<url::Url, String> {
+    if !path.starts_with("/api/") || path.chars().any(char::is_control) {
+        return Err("业务请求路径无效".into());
+    }
+    let base = url::Url::parse(origin).map_err(|_| "业务请求地址无效")?;
+    let target = base.join(path).map_err(|_| "业务请求路径无效")?;
+    if target.origin() != base.origin()
+        || !target.path().starts_with("/api/")
+        || target.fragment().is_some()
+    {
+        return Err("业务请求必须使用同源 API 路径".into());
+    }
+    network_policy::parse_target(target.as_str())
+}
+
+fn business_request(
+    client: &reqwest::Client,
+    target: url::Url,
+    method: reqwest::Method,
+    body: Option<&Value>,
+    token: Option<&str>,
+    referer: &str,
+) -> reqwest::RequestBuilder {
+    let mut request = client
+        .request(method, target)
+        .header("Accept", "application/json")
+        .header("Referer", referer);
+    if let Some(body) = body {
+        request = request.json(body);
+    }
+    if let Some(token) = token.filter(|value| !value.is_empty()) {
+        request = request.bearer_auth(token);
+    }
+    request
+}
+
+/// 仅无请求体、无凭据的 GET 可以跟随重定向，每一跳仍重新检查目标。
 fn edge_redirect_target(
     current: &url::Url,
     status: u16,
@@ -464,7 +499,7 @@ fn edge_redirect_target(
     network_policy::redirect_target(current, location)
 }
 
-/// 业务请求：走边缘信封。
+/// 业务请求：直连业务接口，保留原来的凭据隔离、DNS 固定及重试限制。
 pub async fn edge(
     origin: &str,
     method: &str,
@@ -483,21 +518,22 @@ pub async fn edge(
     {
         return Err("镜像线路仅供游客浏览；登录/注册请切换到固定线路".into());
     }
-    let (encoded, ctype) = match &body {
-        Some(v) => (
-            B64.encode(serde_json::to_vec(v).map_err(|e| e.to_string())?),
-            "application/json",
-        ),
-        None => (String::new(), ""),
-    };
-    let envelope = json!({
-        "method": method,
-        "path": path,
-        "body": encoded,
-        "content_type": ctype,
-    });
-
-    let url = format!("{cur}/api/edge/request");
+    let request_method =
+        reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| "业务请求方法无效")?;
+    if !matches!(
+        request_method,
+        reqwest::Method::GET
+            | reqwest::Method::HEAD
+            | reqwest::Method::POST
+            | reqwest::Method::PUT
+            | reqwest::Method::PATCH
+            | reqwest::Method::DELETE
+    ) || (matches!(request_method, reqwest::Method::GET | reqwest::Method::HEAD)
+        && body.is_some())
+    {
+        return Err("业务请求方法或请求体无效".into());
+    }
+    let url = business_target(&cur, path)?;
     let referer = format!("{cur}/");
     let token = token.map(|s| s.to_string());
 
@@ -517,7 +553,8 @@ pub async fn edge(
     let value = with_retry(can_retry, || {
         attempt += 1;
         let attempt = attempt;
-        let envelope = envelope.clone();
+        let body = body.clone();
+        let request_method = request_method.clone();
         let token = token.clone();
         let url = url.clone();
         let referer = referer.clone();
@@ -531,20 +568,18 @@ pub async fn edge(
             let mut response_kind = "unknown";
             let mut gateway = "other";
             let result = async {
-                let mut next = network_policy::parse_target(&url)?;
+                let mut next = network_policy::parse_target(url.as_str())?;
                 for hop in 0..=5 {
                     let (target, client) = client_for(next.as_str()).await?;
                     target_host = target.host_str().unwrap_or("").to_string();
-                    let mut req = client
-                        .post(target.clone())
-                        .header("Accept", "application/json")
-                        .header("Referer", &referer)
-                        .json(&envelope);
-                    if let Some(t) = token.as_deref() {
-                        if !t.is_empty() {
-                            req = req.header("Authorization", format!("Bearer {t}"));
-                        }
-                    }
+                    let req = business_request(
+                        &client,
+                        target.clone(),
+                        request_method.clone(),
+                        body.as_ref(),
+                        token.as_deref(),
+                        &referer,
+                    );
                     let resp = req.send().await.map_err(|e| err_text(&e))?;
                     let status = resp.status();
                     status_code = Some(status.as_u16());
@@ -552,7 +587,7 @@ pub async fn edge(
                     let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
                     response_kind = if ctype.contains("json") { "json" } else if ctype.contains("html") { "html" } else { "other" };
                     gateway = if resp.headers().contains_key("x-amz-cf-id") { "cloudfront" } else if resp.headers().contains_key("cf-ray") { "cloudflare" } else { "other" };
-                    // 逐跳重建并检查客户端；不自动把信封 POST 改成无信封 GET。
+                    // 不重放 POST 或带凭据的请求，也不向新目标转发认证信息。
                     if status.is_redirection() {
                         if hop == 5 {
                             return Err("重定向次数超过限制".into());
@@ -657,6 +692,64 @@ pub async fn fetch_bytes(url: &str) -> Result<(Option<String>, Vec<u8>), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_business_targets_preserve_queries_and_reject_origin_escape() {
+        let target = business_target(
+            DEFAULT_BASE,
+            "/api/search?q=%E6%B5%8B%E8%AF%95&page=2",
+        )
+        .unwrap();
+        assert_eq!(target.origin().ascii_serialization(), DEFAULT_BASE);
+        assert_eq!(target.path(), "/api/search");
+        assert_eq!(target.query(), Some("q=%E6%B5%8B%E8%AF%95&page=2"));
+        for path in [
+            "https://example.com/api/videos",
+            "//example.com/api/videos",
+            "/api/../../private",
+            "/api/videos#fragment",
+            "/api/videos\n",
+        ] {
+            assert!(business_target(DEFAULT_BASE, path).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn direct_business_requests_use_real_methods_without_an_envelope() {
+        let client = reqwest::Client::new();
+        let target = business_target(DEFAULT_BASE, "/api/videos?page=1&size=6").unwrap();
+        let get = business_request(
+            &client,
+            target,
+            reqwest::Method::GET,
+            None,
+            None,
+            DEFAULT_BASE,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(get.method(), reqwest::Method::GET);
+        assert_eq!(get.url().path(), "/api/videos");
+        assert!(get.body().is_none());
+        assert!(!get.headers().contains_key("authorization"));
+
+        let body = json!({});
+        let post = business_request(
+            &client,
+            business_target(DEFAULT_BASE, "/api/videos/42/episodes/1/playback").unwrap(),
+            reqwest::Method::POST,
+            Some(&body),
+            Some("fixture-token"),
+            DEFAULT_BASE,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(post.method(), reqwest::Method::POST);
+        assert_eq!(post.url().path(), "/api/videos/42/episodes/1/playback");
+        assert_eq!(post.body().unwrap().as_bytes().unwrap(), b"{}");
+        assert_eq!(post.headers()["content-type"], "application/json");
+        assert_eq!(post.headers()["authorization"], "Bearer fixture-token");
+    }
 
     #[tokio::test]
     async fn terminal_errors_do_not_retry_but_transient_failures_can_recover() {

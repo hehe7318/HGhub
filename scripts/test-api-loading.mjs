@@ -63,11 +63,16 @@ try {
   assert.equal((await calls()).filter(r => r.args.cate === "ai-duanju").length, 1, "Retry must only reload the failed channel");
   await complete("api_category", "ai-mogai", "404");
   await visible(page.getByRole("button", { name: "重试AI魔改", exact: true }));
+  await page.getByRole("button", { name: "重试AI魔改", exact: true }).click();
+  await page.waitForFunction(() => window.apiLoadingFixture.history.length === 7);
+  await complete("api_category", "ai-mogai", "410-web");
+  await visible(page.getByRole("region", { name: "AI魔改", exact: true })
+    .getByText("该内容已下线，重试无法恢复", { exact: true }));
   await page.evaluate(() => window.apiLoadingFixture.setActive(false));
   await page.evaluate(() => window.apiLoadingFixture.setActive(true));
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
-  assert.equal((await calls()).length, 6, "Revisiting must preserve previews without reloading all channels");
-  report.passed.push("Category: defer hidden loading, show successful rows/posts before slow row, independent error/retry, preserve data on revisit");
+  assert.equal((await calls()).length, 7, "Revisiting must preserve previews without reloading all channels");
+  report.passed.push("Category: defer hidden loading, independent retry, preserve data, retain web Error offline message");
   assert.deepEqual(errors, [], "No page errors");
   assert.deepEqual(report.external, [], "No upstream traffic");
   await page.screenshot({ path: join(output, "final.png"), fullPage: true });
