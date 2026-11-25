@@ -28,6 +28,16 @@ config_snapshot() {
         /etc/systemd/system/hghub-web.service
 }
 
+wait_gate() {
+    local port="$1"
+    for _ in {1..20}; do
+        if require_gate "$port" 2>/dev/null; then return 0; fi
+        sleep 1
+    done
+    echo "Service did not become ready on the private test interface." >&2
+    return 1
+}
+
 restore_backup() {
     local backup="$1"
     [[ "$backup" =~ ^/opt/hghub-web/rollback/[0-9]{8}T[0-9]{6}Z-[a-zA-Z0-9.-]+$ ]] \
@@ -41,7 +51,7 @@ restore_backup() {
     fi
     mv "$backup/dist" "$root_dir/dist"
     systemctl restart hghub-web
-    require_gate 8900
+    wait_gate 8900
     echo "ROLLBACK_OK"
 }
 
@@ -77,10 +87,14 @@ case "$action" in
         install -d -m 0755 "$root_dir/candidates" "$candidate"
         tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$candidate"
         [[ -f "$candidate/hghub-web" && -f "$candidate/dist/index.html" ]] || exit 1
+        # The archive's "." entry is masked by umask 077; restore only this
+        # non-secret program directory, never the environment or data directory.
+        chmod 0755 "$candidate"
         chmod 0755 "$candidate/hghub-web"
         find "$candidate/dist" -type d -exec chmod 0755 {} +
         find "$candidate/dist" -type f -exec chmod 0644 {} +
-        if ldd "$candidate/hghub-web" | grep -q 'not found'; then
+        libraries="$(ldd "$candidate/hghub-web")"
+        if [[ "$libraries" == *"not found"* ]]; then
             echo "Missing runtime libraries; production is unchanged." >&2
             exit 1
         fi
@@ -94,12 +108,7 @@ case "$action" in
             /usr/bin/env HGHUB_WEB_BIND=127.0.0.1:8901 HGHUB_STRICT=true \
             "HGHUB_WEB_DIST=$candidate/dist" "HGHUB_WEB_DATA=$data_dir" \
             "$candidate/hghub-web"
-        ready=false
-        for _ in {1..20}; do
-            if require_gate 8901 2>/dev/null; then ready=true; break; fi
-            sleep 1
-        done
-        [[ "$ready" == true ]] || { echo "Candidate did not become ready." >&2; exit 1; }
+        wait_gate 8901
         echo "CANDIDATE_READY http://127.0.0.1:8901"
         sha256sum "$candidate/hghub-web"
         ;;
@@ -128,12 +137,7 @@ case "$action" in
         mv "$root_dir/dist" "$backup/original-dist"
         mv "$next_dist" "$root_dir/dist"
         systemctl restart hghub-web
-        ready=false
-        for _ in {1..20}; do
-            if require_gate 8900 2>/dev/null; then ready=true; break; fi
-            sleep 1
-        done
-        [[ "$ready" == true ]]
+        wait_gate 8900
         [[ "$(config_snapshot)" == "$before_config" ]]
         systemctl is-active --quiet hghub-web nginx
         trap - ERR
